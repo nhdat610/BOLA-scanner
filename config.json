@@ -1,0 +1,13 @@
+{
+    "target_url": "https://books.toscrape.com/",
+    "scope": {
+        "allowed_domains": [
+            "books.toscrape.com"
+        ]
+    },
+    "crawl": {
+        "max_pages": 10,
+        "max_depth": 2,
+        "timeout_ms": 10000
+    }
+}
