@@ -1,5 +1,9 @@
 {
     "target_url": "https://books.toscrape.com/",
+    "allowed_hosts": [
+        "books.toscrape.com"
+    ],
+    "openapi_url": "",
     "scope": {
         "allowed_domains": [
             "books.toscrape.com"
