@@ -1,5 +1,9 @@
 import json
-from urllib.parse import urlsplit, urlunsplit, parse_qsl
+from urllib.parse import (
+    urlsplit,
+    urlunsplit,
+    parse_qsl
+)
 
 
 def normalize_record(record):
@@ -32,6 +36,34 @@ def normalize_record(record):
     return result
 
 
+def merge_response(existing, new):
+    if new is None:
+        return
+
+    if existing is None:
+        return new
+
+    # Keep the new response body if the old one is missing.
+    if (
+        existing.get("body") is None
+        and new.get("body") is not None
+    ):
+        existing["body"] = new["body"]
+
+    # Preserve the truncation information.
+    if new.get("body_truncated"):
+        existing["body_truncated"] = True
+
+    # Preserve body reading errors if available.
+    if (
+        "body_error" not in existing
+        and "body_error" in new
+    ):
+        existing["body_error"] = new["body_error"]
+
+    return existing
+
+
 def normalize_and_deduplicate(records):
     unique_records = {}
 
@@ -56,12 +88,12 @@ def normalize_and_deduplicate(records):
 
         else:
             existing = unique_records[key]
+
             existing["occurrences"] += 1
 
-            if (
-                existing["response"] is None
-                and item["response"] is not None
-            ):
-                existing["response"] = item["response"]
+            existing["response"] = merge_response(
+                existing["response"],
+                item["response"]
+            )
 
     return list(unique_records.values())
