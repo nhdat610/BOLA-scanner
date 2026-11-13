@@ -3,6 +3,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 
 from playwright.async_api import async_playwright, Error as PlaywrightError
 
+from crawler.network_collector import NetworkCollector
 
 def normalize_url(url):
     if not isinstance(url, str):
@@ -38,7 +39,7 @@ def is_in_scope(url, allowed_domains):
     return parsed.hostname.lower() in allowed_domains
 
 
-async def crawl(config):
+async def crawl(config, collector=None):
     target_url = normalize_url(config["target_url"])
 
     allowed_domains = {
@@ -77,6 +78,9 @@ async def crawl(config):
         try:
             context = await browser.new_context()
             page = await context.new_page()
+
+            if collector:
+                collector.attach(page)
 
             while queue and pages_attempted < max_pages:
                 url, depth = queue.popleft()
@@ -139,6 +143,8 @@ async def crawl(config):
                         queued_urls.add(next_url)
 
         finally:
+            if collector:
+                await collector.wait_for_tasks()
             await browser.close()
 
     return discovered
