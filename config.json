@@ -1,34 +1,34 @@
 {
-  "target_url": "http://localhost:8888/",
-  "scope": {
-    "allowed_domains": [
-      "localhost"
-    ]
-  },
-  "allowed_hosts": [
-    "localhost"
-  ],
-  "crawl": {
-    "max_pages": 30,
-    "max_depth": 2,
-    "timeout_ms": 10000,
-    "network_wait_timeout_ms": 2000
-  },
-  "auth": {
-    "active_account": "test_user_a",
-    "accounts": {
-      "test_user_a": {
-        "email": "${CRAPI_USER_A_EMAIL}",
-        "password": "${CRAPI_USER_A_PASSWORD}"
-      },
-      "test_user_b": {
-        "email": "${CRAPI_USER_B_EMAIL}",
-        "password": "${CRAPI_USER_B_PASSWORD}"
-      }
+    "target_url": "http://localhost:8888/",
+
+    "scope": {
+        "allowed_domains": [
+            "localhost"
+        ]
+    },
+
+    "allowed_hosts": [
+        "localhost"
+    ],
+
+    "crawl": {
+        "max_pages": 30,
+        "max_depth": 2,
+        "timeout_ms": 10000,
+        "network_wait_timeout_ms": 2000,
+        "network_quiet_ms": 1000,
+        "network_quiet_timeout_ms": 10000
+    },
+
+    "auth": {
+        "accounts": {
+            "test_user_a": {},
+            "test_user_b": {}
+        }
+    },
+
+    "openapi": {
+        "url": null,
+        "file": null
     }
-  },
-  "openapi": {
-    "url": null,
-    "file": null
-  }
 }
