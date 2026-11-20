@@ -1,217 +1,293 @@
 from collections import deque
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urljoin, urlparse
 
-from playwright.async_api import (
-    async_playwright,
-    Error as PlaywrightError
+from playwright.async_api import async_playwright, Error as PlaywrightError
+
+from auth.session import (
+    create_authenticated_context,
+    wait_for_manual_session,
 )
-
-from auth.session import create_authenticated_context
 
 
 def normalize_url(url):
-    if not isinstance(url, str):
-        return None
+    """
+    Remove URL fragments and add a root path when missing.
+    """
+    parsed_url = urlparse(url)
 
-    parsed = urlparse(url)
+    path = parsed_url.path or "/"
 
-    if parsed.scheme.lower() not in ("http", "https"):
-        return None
-
-    if not parsed.hostname:
-        return None
-
-    parsed = parsed._replace(
-        scheme=parsed.scheme.lower(),
-        netloc=parsed.netloc.lower(),
-        path=parsed.path or "/",
+    return parsed_url._replace(
+        path=path,
         fragment=""
-    )
-
-    return urlunparse(parsed)
+    ).geturl()
 
 
-def is_in_scope(url, allowed_domains):
-    parsed = urlparse(url)
+def is_in_scope(url, allowed_hosts):
+    """
+    Check whether a URL belongs to one of the allowed hosts.
+    """
+    parsed_url = urlparse(url)
 
-    if parsed.scheme.lower() not in ("http", "https"):
+    if parsed_url.scheme not in {"http", "https"}:
         return False
 
-    if not parsed.hostname:
-        return False
+    hostname = (parsed_url.hostname or "").lower()
 
-    return parsed.hostname.lower() in allowed_domains
-
-
-async def crawl(config, collector=None):
-    target_url = normalize_url(config["target_url"])
-
-    allowed_domains = {
-        domain.strip().lower()
-        for domain in config["scope"]["allowed_domains"]
-        if domain.strip()
+    normalized_hosts = {
+        host.lower()
+        for host in allowed_hosts
+        if isinstance(host, str) and host.strip()
     }
 
-    max_pages = config["crawl"]["max_pages"]
-    max_depth = config["crawl"]["max_depth"]
+    return hostname in normalized_hosts
 
-    timeout_ms = config["crawl"].get(
-        "timeout_ms", 10000
+
+async def extract_navigation_urls(page, current_url, allowed_hosts):
+    """
+    Extract internal navigation URLs from the current page.
+    """
+    urls = set()
+
+    try:
+        links = await page.locator(
+            'a[href], [role="link"][href]'
+        ).evaluate_all(
+            """
+            elements => elements
+                .map(element => element.getAttribute("href"))
+                .filter(Boolean)
+            """
+        )
+
+        for link in links:
+            absolute_url = urljoin(current_url, link)
+            normalized = normalize_url(absolute_url)
+
+            if is_in_scope(normalized, allowed_hosts):
+                urls.add(normalized)
+
+    except PlaywrightError as error:
+        print(f"Could not extract links: {error}")
+
+    return urls
+
+
+async def wait_for_page(page, config):
+    """
+    Wait for the page and its network activity to settle.
+    """
+    crawl_config = config.get("crawl", {})
+
+    timeout_ms = crawl_config.get("network_wait_timeout_ms", 2000)
+
+    try:
+        await page.wait_for_load_state(
+            "domcontentloaded",
+            timeout=timeout_ms
+        )
+    except PlaywrightError:
+        pass
+
+    try:
+        await page.wait_for_load_state(
+            "networkidle",
+            timeout=timeout_ms
+        )
+    except PlaywrightError:
+        pass
+
+
+async def wait_for_collector(collector):
+    """
+    Wait for pending network collection tasks, if supported
+    by the current NetworkCollector implementation.
+    """
+    wait_method = getattr(collector, "wait_for_pending", None)
+
+    if wait_method is not None:
+        result = wait_method()
+
+        if hasattr(result, "__await__"):
+            await result
+
+
+async def automatic_crawl(
+    page,
+    collector,
+    target_url,
+    start_url,
+    config,
+    allowed_hosts
+):
+    """
+    Automatically crawl internal links after manual interaction.
+    """
+    crawl_config = config.get("crawl", {})
+
+    max_pages = crawl_config.get("max_pages", 30)
+    max_depth = crawl_config.get("max_depth", 2)
+    timeout_ms = crawl_config.get("timeout_ms", 10000)
+
+    queue = deque()
+    visited = set()
+
+    start_urls = [target_url]
+
+    if start_url and start_url != target_url:
+        start_urls.append(start_url)
+
+    for url in start_urls:
+        normalized = normalize_url(url)
+
+        if is_in_scope(normalized, allowed_hosts):
+            queue.append((normalized, 0))
+
+    while queue and len(visited) < max_pages:
+        current_url, depth = queue.popleft()
+
+        if current_url in visited:
+            continue
+
+        if not is_in_scope(current_url, allowed_hosts):
+            continue
+
+        visited.add(current_url)
+
+        print(f"Visiting: {current_url}")
+        print(f"Depth: {depth}")
+
+        try:
+            response = await page.goto(
+                current_url,
+                wait_until="domcontentloaded",
+                timeout=timeout_ms
+            )
+
+            await wait_for_page(page, config)
+
+            await wait_for_collector(collector)
+
+            if response is not None:
+                print(f"Response status: {response.status}")
+
+            final_url = normalize_url(page.url)
+
+            if not is_in_scope(final_url, allowed_hosts):
+                print("Navigation redirected outside the allowed scope.")
+                continue
+
+            if depth >= max_depth:
+                continue
+
+            discovered_urls = await extract_navigation_urls(
+                page,
+                final_url,
+                allowed_hosts
+            )
+
+            for discovered_url in discovered_urls:
+                if discovered_url not in visited:
+                    queue.append((discovered_url, depth + 1))
+
+        except PlaywrightError as error:
+            print(f"Navigation failed: {error}")
+
+        except Exception as error:
+            print(f"Unexpected crawling error: {error}")
+
+    await wait_for_collector(collector)
+
+    return sorted(visited)
+
+
+async def crawl(config, collector):
+    """
+    Run one complete scanning session for one account:
+
+    1. Open a browser.
+    2. Let the tester log in and interact manually.
+    3. Continue with automatic internal-link crawling.
+    4. Close the account's browser context.
+    """
+    target_url = config["target_url"]
+
+    allowed_hosts = config.get("allowed_hosts")
+
+    if not allowed_hosts:
+        allowed_hosts = config.get("scope", {}).get(
+            "allowed_domains", []
+        )
+
+    if not allowed_hosts:
+        raise ValueError("No allowed hosts configured.")
+
+    auth_config = config.get("auth", {})
+
+    account_name = auth_config.get(
+        "active_account",
+        "anonymous"
     )
-
-    network_wait_timeout_ms = config["crawl"].get(
-        "network_wait_timeout_ms", 2000
-    )
-
-    if target_url is None:
-        raise ValueError("Invalid target URL.")
-
-    if not allowed_domains:
-        raise ValueError("No allowed domain configured.")
-
-    if not is_in_scope(target_url, allowed_domains):
-        raise ValueError("Target URL is outside the allowed scope.")
-
-    if (
-        max_pages < 1
-        or max_depth < 0
-        or timeout_ms < 1
-        or network_wait_timeout_ms < 0
-    ):
-        raise ValueError("Invalid crawl limits.")
-
-    queue = deque([(target_url, 0)])
-
-    queued_urls = {target_url}
-    visited_urls = set()
-
-    discovered = []
-    discovered_set = set()
-
-    pages_attempted = 0
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
-            headless=True
+            headless=False
         )
 
+        context = await create_authenticated_context(
+            browser,
+            target_url,
+            auth_config,
+            allowed_hosts
+        )
+
+        page = await context.new_page()
+
+        # Attach the collector before navigating to the target.
+        collector.attach(page)
+
+        print()
+        print(f"Starting session for account: {account_name}")
+        print(f"Target: {target_url}")
+
         try:
-            allowed_hosts = config.get("allowed_hosts")
-
-            if not allowed_hosts:
-                allowed_hosts = config["scope"]["allowed_domains"]
-
-            context = await create_authenticated_context(
-                browser,
+            await page.goto(
                 target_url,
-                config.get("auth", {}),
-                allowed_hosts,
-                collector=collector
-            )
-            page = await context.new_page()
-
-            if collector:
-                collector.attach(page)
-
-            while queue and pages_attempted < max_pages:
-                url, depth = queue.popleft()
-
-                if url in visited_urls:
-                    continue
-
-                visited_urls.add(url)
-                pages_attempted += 1
-
-                print(f"Visiting (depth {depth}): {url}")
-
-                try:
-                    await page.goto(
-                        url,
-                        wait_until="domcontentloaded",
-                        timeout=timeout_ms
-                    )
-
-                except PlaywrightError as error:
-                    print("Could not load:", url)
-                    print("Reason:", error)
-
-                    if collector:
-                        await collector.wait_for_pending(
-                            network_wait_timeout_ms
-                        )
-
-                    continue
-
-                # Wait for network requests to finish.
-                if collector:
-                    await collector.wait_for_pending(
-                        network_wait_timeout_ms
-                    )
-
-                current_url = normalize_url(page.url)
-
-                if current_url is None:
-                    continue
-
-                if not is_in_scope(
-                    current_url,
-                    allowed_domains
-                ):
-                    print(
-                        "Page is outside the allowed scope:",
-                        page.url
-                    )
-                    continue
-
-                visited_urls.add(current_url)
-
-                if current_url not in discovered_set:
-                    discovered.append(current_url)
-                    discovered_set.add(current_url)
-
-                if depth >= max_depth:
-                    continue
-
-                links = await page.locator("a").evaluate_all(
-                    """
-                    links => links.map(
-                        link => link.getAttribute('href')
-                    )
-                    """
+                wait_until="domcontentloaded",
+                timeout=config.get("crawl", {}).get(
+                    "timeout_ms",
+                    10000
                 )
+            )
 
-                for link in links:
-                    if not link:
-                        continue
+            await wait_for_page(page, config)
 
-                    next_url = normalize_url(
-                        urljoin(current_url, link)
-                    )
+            # The tester logs in and explores the application manually.
+            manual_start_url = await wait_for_manual_session(
+                page,
+                account_name
+            )
 
-                    if next_url is None:
-                        continue
+            print()
+            print("Starting automatic crawling...")
 
-                    if not is_in_scope(
-                        next_url,
-                        allowed_domains
-                    ):
-                        continue
+            visited_urls = await automatic_crawl(
+                page=page,
+                collector=collector,
+                target_url=target_url,
+                start_url=manual_start_url,
+                config=config,
+                allowed_hosts=allowed_hosts
+            )
 
-                    if (
-                        next_url not in visited_urls
-                        and next_url not in queued_urls
-                    ):
-                        queue.append((next_url, depth + 1))
-                        queued_urls.add(next_url)
+            await wait_for_collector(collector)
+
+            print()
+            print(f"Finished session for account: {account_name}")
+            print(f"Discovered pages: {len(visited_urls)}")
+
+            return visited_urls
 
         finally:
-            if collector:
-                await collector.wait_for_pending(
-                    network_wait_timeout_ms
-                )
-
-                await collector.wait_for_tasks()
-
+            await context.close()
             await browser.close()
-
-    return discovered

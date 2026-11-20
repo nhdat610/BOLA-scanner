@@ -10,16 +10,22 @@ from urllib.parse import (
 )
 
 
-SENSITIVE_KEYS = [
+SENSITIVE_KEYS = {
     "authorization",
     "cookie",
     "token",
     "password",
     "secret",
     "api_key",
-    "apikey",
-    "session"
-]
+    "session",
+    "email",
+    "phone",
+    "phonenumber",
+    "number",
+    "fullname",
+    "firstname",
+    "lastname"
+}
 
 
 def is_sensitive(key):
@@ -100,14 +106,14 @@ class NetworkCollector:
         }
 
         self.max_response_body = max_response_body
+
         self.records = []
         self.records_by_request = {}
-
-        # Stores sanitized headers when a request has not been recorded yet.
         self.request_header_overrides = {}
 
         self.pending_requests = set()
-        self.pending_event = asyncio.Event()
+        self.activity_event = asyncio.Event()
+
         self.tasks = []
 
     def is_in_scope(self, url):
@@ -143,7 +149,6 @@ class NetworkCollector:
         if not self.is_in_scope(request.url):
             return
 
-        # Use updated headers if the authentication handler has supplied them.
         headers = self.request_header_overrides.pop(
             request,
             clean_headers(request.headers)
@@ -158,17 +163,23 @@ class NetworkCollector:
             "resource_type": request.resource_type,
             "source_page": clean_url(source_page),
             "request_headers": headers,
-            "request_body": get_json_body(raw_body, request.headers),
+            "request_body": get_json_body(
+                raw_body,
+                request.headers
+            ),
             "response": None,
             "error": None
         }
 
         self.records.append(record)
         self.records_by_request[request] = record
+
         self.pending_requests.add(request)
+        self.activity_event.set()
 
     def on_response(self, response):
-        record = self.records_by_request.get(response.request)
+        request = response.request
+        record = self.records_by_request.get(request)
 
         if record is None:
             return
@@ -181,7 +192,9 @@ class NetworkCollector:
             "body": None
         }
 
-        content_type = headers.get("content-type", "").lower()
+        content_type = headers.get(
+            "content-type", ""
+        ).lower()
 
         if "json" in content_type:
             task = asyncio.create_task(
@@ -192,7 +205,9 @@ class NetworkCollector:
 
     async def capture_response_body(self, response, record):
         try:
-            content_length = response.headers.get("content-length")
+            content_length = response.headers.get(
+                "content-length"
+            )
 
             if content_length:
                 if int(content_length) > self.max_response_body:
@@ -215,7 +230,7 @@ class NetworkCollector:
 
     def on_request_finished(self, request):
         self.pending_requests.discard(request)
-        self.pending_event.set()
+        self.activity_event.set()
 
     def on_request_failed(self, request):
         record = self.records_by_request.get(request)
@@ -224,32 +239,47 @@ class NetworkCollector:
             record["error"] = request.failure
 
         self.pending_requests.discard(request)
-        self.pending_event.set()
+        self.activity_event.set()
 
-    async def wait_for_pending(self, timeout_ms=2000):
-        deadline = (
-            asyncio.get_running_loop().time()
-            + timeout_ms / 1000
-        )
+    async def wait_for_network_quiet(
+        self,
+        quiet_ms=500,
+        timeout_ms=5000
+    ):
+        loop = asyncio.get_running_loop()
 
-        while self.pending_requests:
-            remaining = (
-                deadline - asyncio.get_running_loop().time()
-            )
+        deadline = loop.time() + timeout_ms / 1000
+        quiet_seconds = quiet_ms / 1000
+
+        while True:
+            remaining = deadline - loop.time()
 
             if remaining <= 0:
-                break
+                return
 
-            self.pending_event.clear()
+            self.activity_event.clear()
+
+            if self.pending_requests:
+                try:
+                    await asyncio.wait_for(
+                        self.activity_event.wait(),
+                        timeout=remaining
+                    )
+
+                except asyncio.TimeoutError:
+                    return
+
+                continue
 
             try:
                 await asyncio.wait_for(
-                    self.pending_event.wait(),
-                    timeout=remaining
+                    self.activity_event.wait(),
+                    timeout=min(quiet_seconds, remaining)
                 )
 
             except asyncio.TimeoutError:
-                break
+                if not self.pending_requests:
+                    return
 
     async def wait_for_tasks(self):
         if self.tasks:
