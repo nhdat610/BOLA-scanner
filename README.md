@@ -141,12 +141,30 @@ Một số file JSON được tạo trong quá trình chạy:
 |---|---|
 | `data/network_traffic.json` | HTTP request/response đã thu thập và xử lý |
 | `data/identifiers_and_test_cases.json` | Identifier được nhận diện và các test case được sinh |
+| `data/test_execution.json` | Kết quả thực thi test case, response và thời gian phản hồi |
 
 Ví dụ, với hai tài khoản thử nghiệm A và B, chương trình có thể sinh các test case:
 - Sử dụng identifier của tài khoản B trong request của tài khoản A.
 - Sử dụng identifier của tài khoản A trong request của tài khoản B.
 
 Các test case này hiện được sinh ra để phục vụ bước kiểm thử tiếp theo; chưa thể kết luận có hay không có lỗi BOLA khi chưa thực thi và phân tích response.
+
+### Cấu hình xác thực và thực thi
+
+Trong `config.json`, `auth.defaults` đặt cấu hình chung; `auth.accounts` cho phép ghi đè theo từng tài khoản. Mặc định:
+- `cookie: "auto"`: lấy cookie từ BrowserContext của tài khoản hiện tại.
+- `capture_authorization: true`: ghi nhận Authorization header từ request cùng origin trong phiên trình duyệt.
+- `bearer_token_env`: tùy chọn tên biến môi trường chứa token nếu không muốn thu thập từ request.
+- `custom_headers`: header bổ sung; có thể dùng `${ENV_VAR}` để lấy giá trị từ biến môi trường.
+
+Ví dụ đặt token bằng PowerShell (chỉ khi cần):
+```powershell
+$env:CRAPI_TOKEN_A = "..."
+```
+
+Không commit token, cookie hoặc mật khẩu vào Git. Chỉ chạy trên hệ thống được phép kiểm thử. Mặc định chỉ cho phép `GET`, `HEAD`, `OPTIONS`; `allow_mutation` phải giữ `false` trừ khi có phê duyệt rõ ràng.
+
+**Giới hạn:** tự động lấy Authorization phụ thuộc việc trình duyệt phát sinh ít nhất một request cùng origin có header này sau khi listener được đăng ký. Cơ chế đăng nhập OAuth/SSO/MFA hoặc header động/CSRF đặc thù có thể cần cấu hình bổ sung. Công cụ không tự động giải CAPTCHA/MFA.
 
 ## 8. Kiểm thử
 

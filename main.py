@@ -1,6 +1,6 @@
-
 import asyncio
 import json
+
 from copy import deepcopy
 from pathlib import Path
 
@@ -11,10 +11,12 @@ from collector.normalizer import normalize_and_deduplicate
 
 from collector.openapi_parser import (
     parse_openapi_file,
-    fetch_openapi,
+    fetch_openapi
 )
 
 from analyzer.test_case_generator import generate_test_cases
+
+from executor.test_executor import execute_test_cases
 
 
 CONFIG_PATH = Path("config.json")
@@ -38,7 +40,10 @@ def save_json(file_path, data):
     """
     Save data to a JSON file.
     """
-    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
     with file_path.open("w", encoding="utf-8") as file:
         json.dump(
@@ -55,7 +60,9 @@ def get_account_names(config):
 
     If no accounts are configured, run one anonymous session.
     """
-    accounts = config.get("auth", {}).get("accounts", {})
+    accounts = config.get(
+        "auth", {}
+    ).get("accounts", {})
 
     if not accounts:
         return ["anonymous"]
@@ -70,14 +77,17 @@ async def run_account_session(config, account_name):
     account_config = deepcopy(config)
 
     account_config.setdefault("auth", {})
-    account_config["auth"]["active_account"] = account_name
 
-    allowed_hosts = account_config.get("allowed_hosts")
+    account_config["auth"]["active_account"] = (
+        account_name
+    )
 
-    if not allowed_hosts:
-        allowed_hosts = account_config.get(
+    allowed_hosts = (
+        account_config.get("allowed_hosts")
+        or account_config.get(
             "scope", {}
         ).get("allowed_domains", [])
+    )
 
     collector = NetworkCollector(allowed_hosts)
 
@@ -96,7 +106,7 @@ async def run_account_session(config, account_name):
         collector.records
     )
 
-    # Associate each request with the account that generated it.
+    # Associate each request with its account.
     for record in records:
         record["account"] = account_name
 
@@ -109,22 +119,64 @@ async def run_account_session(config, account_name):
     return records
 
 
+def print_execution_summary(results):
+    """
+    Print a summary of test case execution.
+    """
+    total = len(results)
+
+    executed = sum(
+        1 for item in results
+        if item["executed"]
+    )
+
+    completed = sum(
+        1 for item in results
+        if item["status"] == "completed"
+    )
+
+    errors = sum(
+        1 for item in results
+        if item["status"] == "error"
+    )
+
+    skipped = sum(
+        1 for item in results
+        if item["status"] == "skipped"
+    )
+
+    print()
+    print("=" * 60)
+    print("Test execution summary")
+    print("=" * 60)
+    print(f"Total results: {total}")
+    print(f"Executed: {executed}")
+    print(f"Completed: {completed}")
+    print(f"Errors: {errors}")
+    print(f"Skipped: {skipped}")
+
+
 async def main():
     config = load_config()
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DATA_DIR.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
     target_url = config.get("target_url")
 
     if not target_url:
-        raise ValueError("The target_url field is missing.")
+        raise ValueError(
+            "The target_url field is missing."
+        )
 
     account_names = get_account_names(config)
 
     # Store requests separately for each account.
     account_records = {}
 
-    # Store all requests together for the traffic report.
+    # Store all requests together.
     all_network_records = []
 
     print("=" * 60)
@@ -133,18 +185,22 @@ async def main():
     print(f"Target: {target_url}")
     print(f"Number of accounts: {len(account_names)}")
 
-    # Run one isolated browser session for each account.
+    # Run one isolated browser session per account.
     for account_name in account_names:
+
         records = await run_account_session(
             config,
             account_name
         )
 
         account_records[account_name] = records
+
         all_network_records.extend(records)
 
     # Save collected network traffic.
-    traffic_path = DATA_DIR / "network_traffic.json"
+    traffic_path = (
+        DATA_DIR / "network_traffic.json"
+    )
 
     save_json(
         traffic_path,
@@ -158,7 +214,7 @@ async def main():
     print()
     print(f"Network traffic saved to: {traffic_path}")
 
-    # Analyze identifiers and generate cross-account test cases.
+    # Analyze identifiers and generate test cases.
     analysis_result = generate_test_cases(
         account_records
     )
@@ -175,13 +231,20 @@ async def main():
     print()
     print(f"Analysis saved to: {analysis_path}")
 
-    # Parse OpenAPI if a file or URL is configured.
+    print()
+    print(
+        f"Generated test cases: "
+        f"{analysis_result['total_test_cases']}"
+    )
+
+    # Parse OpenAPI if configured.
     openapi_config = config.get("openapi", {})
 
     openapi_file = openapi_config.get("file")
     openapi_url = openapi_config.get("url")
 
     if openapi_file:
+
         print()
         print("Parsing OpenAPI specification from file...")
 
@@ -195,13 +258,20 @@ async def main():
         )
 
     elif openapi_url:
+
         print()
         print("Fetching OpenAPI specification from URL...")
 
+        allowed_hosts = (
+            config.get("allowed_hosts")
+            or config.get(
+                "scope", {}
+            ).get("allowed_domains", [])
+        )
+
         openapi_result = await fetch_openapi(
             openapi_url,
-            config.get("allowed_hosts")
-            or config.get("scope", {}).get("allowed_domains", [])
+            allowed_hosts
         )
 
         save_json(
@@ -213,16 +283,61 @@ async def main():
         print()
         print("No OpenAPI specification configured.")
 
+    # Execute generated test cases.
+    test_cases = analysis_result["test_cases"]
+
+    print()
+    print("=" * 60)
+    print("Starting test case execution")
+    print("=" * 60)
+
+    execution_results = await execute_test_cases(
+        test_cases,
+        config
+    )
+
+    execution_path = (
+        DATA_DIR / "test_execution.json"
+    )
+
+    save_json(
+        execution_path,
+        {
+            "total_test_cases": len(test_cases),
+            "total_execution_results": len(
+                execution_results
+            ),
+            "results": execution_results
+        }
+    )
+
+    print_execution_summary(
+        execution_results
+    )
+
+    print()
+    print(
+        f"Execution results saved to: {execution_path}"
+    )
+
     print()
     print("=" * 60)
     print("BOLA-scanner finished")
     print("=" * 60)
-    print(f"Total collected requests: {len(all_network_records)}")
+    print(
+        f"Total collected requests: "
+        f"{len(all_network_records)}"
+    )
     print(f"Accounts processed: {len(account_names)}")
+    print(f"Generated test cases: {len(test_cases)}")
+    print(f"Executed test cases: {len(execution_results)}")
     print(f"Network traffic: {traffic_path}")
     print(f"Identifier analysis: {analysis_path}")
+    print(f"Execution results: {execution_path}")
     print()
-    print("Generated test cases have not been executed yet.")
+    print(
+        "Response comparison has not been performed yet."
+    )
 
 
 if __name__ == "__main__":
