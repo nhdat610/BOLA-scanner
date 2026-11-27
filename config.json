@@ -1,5 +1,5 @@
 {
-    "target_url": "http://localhost:8888/",
+    "target_url": "http://localhost:8888/", 
 
     "scope": {
         "allowed_domains": [
@@ -22,13 +22,37 @@
 
     "auth": {
         "accounts": {
-            "test_user_a": {},
-            "test_user_b": {}
+            "test_user_a": {
+                "custom_headers": {}
+            },
+            "test_user_b": {
+                "custom_headers": {}
+            }
+        },
+        "defaults": {
+            "cookie": "auto",
+            "capture_authorization": true,
+            "bearer_token_env": null,
+            "custom_headers": {}
         }
     },
 
     "openapi": {
         "url": null,
         "file": null
+    },
+    
+    "execution": {
+        "enabled": true,
+        "allow_mutation": false,
+        "allowed_methods": [
+            "GET",
+            "HEAD",
+            "OPTIONS"
+        ],
+        "max_requests": 50,
+        "delay_ms": 500,
+        "timeout_ms": 10000,
+        "max_response_body": 100000
     }
 }

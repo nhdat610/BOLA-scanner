@@ -100,16 +100,25 @@ async def wait_for_page(page, config):
 
 async def wait_for_collector(collector):
     """
-    Wait for pending network collection tasks, if supported
-    by the current NetworkCollector implementation.
+    Wait for pending network requests and response tasks.
     """
-    wait_method = getattr(collector, "wait_for_pending", None)
+    wait_network = getattr(
+        collector,
+        "wait_for_network_quiet",
+        None
+    )
 
-    if wait_method is not None:
-        result = wait_method()
+    if wait_network is not None:
+        await wait_network()
 
-        if hasattr(result, "__await__"):
-            await result
+    wait_tasks = getattr(
+        collector,
+        "wait_for_tasks",
+        None
+    )
+
+    if wait_tasks is not None:
+        await wait_tasks()
 
 
 async def automatic_crawl(
